@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>真实物理绳索模拟</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;overflow:hidden;font-family:'Segoe UI',sans-serif;user-select:none;-webkit-user-select:none;cursor:grab}
+body.grabbing{cursor:grabbing}
+canvas{display:block}
+.hint{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.5);font-size:14px;letter-spacing:1px;pointer-events:none;transition:opacity .5s}
+.hint.fade{opacity:0}
+.ctls{position:fixed;top:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:10}
+.ctls button{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#ccc;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:13px;transition:all .3s;backdrop-filter:blur(10px)}
+.ctls button:hover{background:rgba(255,255,255,0.15);border-color:rgba(255,255,255,0.3);color:#fff}
+.stats{position:fixed;top:20px;left:20px;color:rgba(255,255,255,0.4);font-size:12px;pointer-events:none;z-index:10}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint" id="hint">拖拽绳索 · 滚轮调整段数 · 空格键切换模式</div>
+<div class="stats" id="stats"></div>
+<div class="ctls">
+<button id="btnReset">重置</button>
+<button id="btnMode">单绳</button>
+<button id="btnAdd">段数+</button>
+<button id="btnSub">段数-</button>
+</div>
+<script>
+(function(){
+var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+var hint=document.getElementById('hint'),stats=document.getElementById('stats');
+var W,H;
+function rs(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight}
+rs();window.addEventListener('resize',rs);
+
+var G=0.2,DAMP=0.995,ITER=30,SUB=4;
+
+function V2(x,y){this.x=x;this.y=y}
+V2.prototype.add=function(v){return new V2(this.x+v.x,this.y+v.y)}
+V2.prototype.sub=function(v){return new V2(this.x-v.x,this.y-v.y)}
+V2.prototype.scl=function(s){return new V2(this.x*s,this.y*s)}
+V2.prototype.len=function(){return Math.sqrt(this.x*this.x+this.y*this.y)}
+V2.prototype.nrm=function(){var l=this.len();return l>0.0001?this.scl(1/l):new V2(0,0)}
+V2.prototype.dst=function(v){return this.sub(v).len()}
+
+function Pt(x,y,m){this.pos=new V2(x,y);this.prev=new V2(x,y);this.mass=m||1;this.pinned=false}
+function Cns(a,b,rl){this.a=a;this.b=b;this.rl=rl;this.stf=1}
+Cns.prototype.slv=function(){
+  var d=this.b.pos.sub(this.a.pos),l=d.len();
+  if(l<0.0001)return;
+  var c=d.scl((1-this.rl/l)*this.stf),tm=this.a.mass+this.b.mass;
+  if(!this.a.pinned)this.a.pos=this.a.pos.add(c.scl(this.b.mass/tm));
+  if(!this.b.pinned)this.b.pos=this.b.pos.sub(c.scl(this.a.mass/tm));
+}
+
+function Rope(sx,sy,ex,ey,sg){this.pts=[];this.cns=[];this.sg=sg;this.bld(sx,sy,ex,ey)}
+Rope.prototype.bld=function(sx,sy,ex,ey){
+  this.pts=[];this.cns=[];
+  var dx=(ex-sx)/this.sg,dy=(ey-sy)/this.sg;
+  for(var i=0;i<=this.sg;i++)this.pts.push(new Pt(sx+dx*i,sy+dy*i));
+  this.pts[0].pinned=true;this.pts[0].mass=99999;
+  this.pts[this.sg].mass=3;
+  var sl=this.pts[0].pos.dst(this.pts[1].pos);
+  for(var i=0;i<this.sg;i++)this.cns.push(new Cns(this.pts[i],this.pts[i+1],sl));
+}
+Rope.prototype.rbd=function(sg){
+  var s=this.pts[0].pos,e=this.pts[this.pts.length-1].pos;this.sg=sg;this.bld(s.x,s.y,e.x,e.y);
+}
+Rope.prototype.upd=function(dt){
+  var sd=dt/SUB;
+  for(var s=0;s<SUB;s++){
+    for(var i=0;i<this.pts.length;i++){
+      var p=this.pts[i];if(p.pinned)continue;
+      var vx=(p.pos.x-p.prev.x)*DAMP,vy=(p.pos.y-p.prev.y)*DAMP;
+      p.prev.x=p.pos.x;p.prev.y=p.pos.y;
+      p.pos.x+=vx;p.pos.y+=vy+G;
+    }
+    for(var it=0;it<ITER;it++)for(var j=0;j<this.cns.length;j++)this.cns[j].slv();
+    for(var i=0;i<this.pts.length;i++){
+      var p=this.pts[i];if(p.pinned)continue;var r=8;
+      if(p.pos.x<r){p.pos.x=r;p.prev.x=p.pos.x}
+      if(p.pos.x>W-r){p.pos.x=W-r;p.prev.x=p.pos.x}
+      if(p.pos.y<r){p.pos.y=r;p.prev.y=p.pos.y}
+      if(p.pos.y>H-r){p.pos.y=H-r;p.prev.y=p.pos.y}
+    }
+  }
+}
+Rope.prototype.draw=function(ctx){
+  if(this.pts.length<2)return;
+  ctx.save();ctx.globalAlpha=0.15;
+  for(var i=0;i<this.pts.length-1;i++){
+    var a=this.pts[i].pos,b=this.pts[i+1].pos;
+    ctx.beginPath();ctx.moveTo(a.x+4,a.y+4);ctx.lineTo(b.x+4,b.y+4);
+    ctx.lineWidth=12;ctx.strokeStyle='#000';ctx.lineCap='round';ctx.stroke();
+  }
+  ctx.restore();
+  for(var i=0;i<this.pts.length-1;i++){
+    var a=this.pts[i].pos,b=this.pts[i+1].pos,tn=Math.min(1,Math.abs(a.dst(b)-this.cns[i].rl)/this.cns[i].rl*5);
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+    ctx.lineWidth=10-tn*2.5;ctx.strokeStyle='#8B6914';ctx.lineCap='round';ctx.stroke();
+    ctx.beginPath();ctx.moveTo(a.x-1,a.y-2);ctx.lineTo(b.x-1,b.y-2);
+    ctx.lineWidth=5-tn*1.5;ctx.strokeStyle='#C4A44A';ctx.lineCap='round';ctx.stroke();
+    ctx.beginPath();ctx.moveTo(a.x+1,a.y+2);ctx.lineTo(b.x+1,b.y+2);
+    ctx.lineWidth=4-tn;ctx.strokeStyle='#5C4010';ctx.lineCap='round';ctx.stroke();
+    var l=a.dst(b);
+    if(l>5){
+      var dr=b.sub(a).nrm(),pp=new V2(-dr.y,dr.x),st=Math.floor(l/6);
+      for(var s=0;s<st;s++){
+        var t=(s+0.5)/st,px=a.x+(b.x-a.x)*t+pp.x*(Math.sin(s*3.7)*2.5),py=a.y+(b.y-a.y)*t+pp.y*(Math.sin(s*3.7)*2.5);
+        ctx.beginPath();ctx.arc(px,py,1.2,0,Math.PI*2);ctx.fillStyle='rgba(0,0,0,0.25)';ctx.fill();
+      }
+    }
+  }
+  var pn=this.pts[0].pos;
+  ctx.beginPath();ctx.arc(pn.x,pn.y,7,0,Math.PI*2);ctx.fillStyle='#555';ctx.fill();
+  ctx.beginPath();ctx.arc(pn.x,pn.y,4,0,Math.PI*2);ctx.fillStyle='#888';ctx.fill();
+  ctx.strokeStyle='#444';ctx.lineWidth=2;ctx.beginPath();ctx.arc(pn.x,pn.y,7,0,Math.PI*2);ctx.stroke();
+  var en=this.pts[this.pts.length-1].pos;
+  ctx.beginPath();ctx.arc(en.x,en.y,8,0,Math.PI*2);
+  var eg=ctx.createRadialGradient(en.x,en.y,2,en.x,en.y,8);
+  eg.addColorStop(0,'#C4A44A');eg.addColorStop(1,'#5C4010');ctx.fillStyle=eg;ctx.fill();
+  ctx.strokeStyle='#3a2808';ctx.lineWidth=1.5;ctx.stroke();
+}
+Rope.prototype.nrst=function(mx,my,md){
+  md=md||40;var cl=null,cd=md;
+  for(var i=0;i<this.pts.length;i++){
+    var d=this.pts[i].pos.dst(new V2(mx,my));
+    if(d<cd){cd=d;cl={i:i,p:this.pts[i],d:d}}
+  }
+  return cl;
+}
+
+var rope,md='single',gp=null,mx=0,my=0,pmx=0,pmy=0,drg=false;
+function cr(m){
+  switch(m){
+    case'single':rope=new Rope(W*0.5,60,W*0.5,H*0.55,60);break;
+    case'double':rope=new Rope(W*0.3,60,W*0.7,60,80);
+      for(var i=Math.floor(rope.sg/2);i<=rope.sg;i++)rope.pts[i].mass=2;
+      rope.pts[rope.sg].mass=5;break;
+    case'swing':rope=new Rope(W*0.5,40,W*0.5,H*0.7,50);rope.pts[rope.sg].mass=8;break;
+  }
+}
+cr(md);
+
+canvas.addEventListener('mousedown',function(e){
+  var cx=e.clientX,cy=e.clientY,cl=rope.nrst(cx,cy,50);
+  if(cl&&cl.i>0){gp=cl.p;gp.pinned=true;gp.pos.x=cx;gp.pos.y=cy;gp.prev.x=cx;gp.prev.y=cy;drg=true;document.body.classList.add('grabbing');hint.classList.add('fade')}
+});
+canvas.addEventListener('mousemove',function(e){
+  pmx=mx;pmy=my;mx=e.clientX;my=e.clientY;
+  if(gp){gp.pos.x=mx;gp.pos.y=my;gp.prev.x=mx-(mx-pmx)*0.3;gp.prev.y=my-(my-pmy)*0.3}
+  var cl=rope.nrst(mx,my,40);canvas.style.cursor=(cl&&cl.i>0)?'grab':'default';
+});
+canvas.addEventListener('mouseup',function(){if(gp){gp.pinned=false;gp=null;drg=false;document.body.classList.remove('grabbing')}});
+canvas.addEventListener('mouseleave',function(){if(gp){gp.pinned=false;gp=null;drg=false;document.body.classList.remove('grabbing')}});
+canvas.addEventListener('touchstart',function(e){e.preventDefault();var t=e.touches[0],cx=t.clientX,cy=t.clientY,cl=rope.nrst(cx,cy,60);if(cl&&cl.i>0){gp=cl.p;gp.pinned=true;gp.pos.x=cx;gp.pos.y=cy;gp.prev.x=cx;gp.prev.y=cy;drg=true;hint.classList.add('fade')}},{passive:false});
+canvas.addEventListener('touchmove',function(e){e.preventDefault();if(gp&&e.touches.length>0){var t=e.touches[0];gp.pos.x=t.clientX;gp.pos.y=t.clientY;gp.prev.x=t.clientX;gp.prev.y=t.clientY}},{passive:false});
+canvas.addEventListener('touchend',function(){if(gp){gp.pinned=false;gp=null;drg=false}});
+
+window.addEventListener('keydown',function(e){
+  switch(e.code){
+    case'Space':e.preventDefault();var ms=['single','double','swing'],ix=ms.indexOf(md);md=ms[(ix+1)%ms.length];cr(md);document.getElementById('btnMode').textContent={single:'单绳',double:'双绳',swing:'摆锤'}[md];break;
+    case'KeyR':cr(md);hint.classList.remove('fade');break;
+    case'ArrowUp':if(rope.sg<120)rope.rbd(rope.sg+5);break;
+    case'ArrowDown':if(rope.sg>10)rope.rbd(rope.sg-5);break;
+  }
+});
+canvas.addEventListener('wheel',function(e){e.preventDefault();var d=e.deltaY>0?-5:5,ns=Math.max(10,Math.min(120,rope.sg+d));rope.rbd(ns)},{passive:false});
+
+document.getElementById('btnReset').addEventListener('click',function(){cr(md);hint.classList.remove('fade')});
+document.getElementById('btnMode').addEventListener('click',function(){var ms=['single','double','swing'],ix=ms.indexOf(md);md=ms[(ix+1)%ms.length];cr(md);document.getElementById('btnMode').textContent={single:'单绳',double:'双绳',swing:'摆锤'}[md]});
+document.getElementById('btnAdd').addEventListener('click',function(){if(rope.sg<120)rope.rbd(rope.sg+5)});
+document.getElementById('btnSub').addEventListener('click',function(){if(rope.sg>10)rope.rbd(rope.sg-5)});
+
+var pts=[];for(var i=0;i<30;i++)pts.push({x:Math.random()*W,y:Math.random()*H,r:Math.random()*1.5+0.5,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,a:Math.random()*0.3+0.1});
+function dp(){for(var i=0;i<pts.length;i++){var p=pts[i];p.x+=p.vx;p.y+=p.vy;if(p.x<0)p.x=W;if(p.x>W)p.x=0;if(p.y<0)p.y=H;if(p.y>H)p.y=0;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fillStyle='rgba(255,255,255,'+p.a+')';ctx.fill()}}
+
+var lt=performance.now(),fc=0,ft=performance.now(),fp=0;
+(function lp(t){
+  requestAnimationFrame(lp);var dt=(t-lt)/1000;lt=t;if(dt>0.05)dt=0.016;fc++;if(t-ft>=1000){fp=fc;fc=0;ft=t}
+  ctx.clearRect(0,0,W,H);
+  var bg=ctx.createRadialGradient(W*0.5,H*0.3,50,W*0.5,H*0.5,Math.max(W,H));
+  bg.addColorStop(0,'#1e1e3a');bg.addColorStop(1,'#0d0d1a');ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(255,255,255,0.015)';ctx.lineWidth=1;
+  for(var x=60;x<W;x+=60){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(var y=60;y<H;y+=60){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+  dp();rope.upd(dt);rope.draw(ctx);
+  stats.innerHTML='FPS: '+fp+' | 段数: '+rope.sg+' | 模式: '+{single:'单绳悬挂',double:'双绳U型',swing:'摆锤'}[md];
+})();
+setTimeout(function(){hint.classList.add('fade')},8000);
+})();
+</script>
+</body>
+</html>
